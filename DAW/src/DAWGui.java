@@ -12,8 +12,7 @@ import javax.swing.filechooser.FileNameExtensionFilter;
  * This class acts as the user GUI for the Sequencer program,
  * ensuring that UI changes update the audio state and thread-safe 
  * playhead updates.
- * 
- * @author Selena He
+ *
  */
 public class DAWGui {
     /** The underlying logic engine for audio playback and data management. */
@@ -32,7 +31,6 @@ public class DAWGui {
     private JLabel   masterVolLabel, drumVolLabel, synthVolLabel, velocityLabel;
 
     private boolean syncingControls = false;
-
     /**
      * Constructs a new {@code DAWGui} and initializes all visual components.
      * * @param sequencer The {@link Sequencer} instance to be controlled by this GUI.
@@ -59,7 +57,6 @@ public class DAWGui {
         mainFrame.setLocationRelativeTo(null);
         mainFrame.setVisible(true);
     }
-
     /**
      * Builds the control toolbar containing transport buttons, 
      * BPM settings, step counts, and volume mixers.
@@ -164,7 +161,6 @@ public class DAWGui {
         root.add(row4);
         return root;
     }
-
     /**
      * A helper method to create a standardized horizontal volume slider.
      * * @param initial The initial volume value to set the slider to.
@@ -259,46 +255,69 @@ public class DAWGui {
      * * @return A configured {@link JFileChooser} ready for use in Open or Save files.
      */
     private static JFileChooser makeChooser() {
-        JFileChooser chooser = new JFileChooser();
+        File startDir = new File(System.getProperty("user.home"), "Documents");
+        if (!startDir.isDirectory()) startDir = new File(System.getProperty("user.home"));
+        JFileChooser chooser = new JFileChooser(startDir);
         chooser.setFileFilter(new FileNameExtensionFilter("Sync3 song files (*.sync3)", "sync3"));
         chooser.setAcceptAllFileFilterUsed(false);
         return chooser;
     }
-
     /**
      * Opens a save dialog to export the current session as a {@code .sync3} file.
      */
     private void doSave() {
         JFileChooser chooser = makeChooser();
-        if (chooser.showSaveDialog(mainFrame) != JFileChooser.APPROVE_OPTION) return;
+        chooser.setSelectedFile(new File("song.sync3"));   
+
+        int result = chooser.showSaveDialog(mainFrame);
+        System.out.println("[Save] dialog result=" + result);
+        if (result != JFileChooser.APPROVE_OPTION) return;
+
         File f = chooser.getSelectedFile();
+        if (f == null) {
+            JOptionPane.showMessageDialog(mainFrame,
+                "No file selected.", "Save", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
         if (!f.getName().toLowerCase().endsWith(".sync3")) {
             f = new File(f.getAbsolutePath() + ".sync3");
         }
+        System.out.println("[Save] writing to: " + f.getAbsolutePath());
+
         try {
             sequencer.saveTo(f);
-            JOptionPane.showMessageDialog(mainFrame, "Saved: " + f.getName());
-        } catch (Exception ex) {
+            long bytes = f.length();
+            System.out.println("[Save] success: " + bytes + " bytes");
             JOptionPane.showMessageDialog(mainFrame,
-                "Save failed: " + ex.getMessage(),
+                "Saved (" + bytes + " bytes) to:\n" + f.getAbsolutePath());
+        } catch (Exception ex) {
+            ex.printStackTrace();   
+            JOptionPane.showMessageDialog(mainFrame,
+                "Save failed: " + ex.getMessage()
+                    + "\n\nTried path: " + f.getAbsolutePath(),
                 "Error", JOptionPane.ERROR_MESSAGE);
         }
     }
-
     /**
      * Opens an open dialog to import a {@code .sync3} file and updates the UI state.
      */
     private void doLoad() {
         JFileChooser chooser = makeChooser();
-        if (chooser.showOpenDialog(mainFrame) != JFileChooser.APPROVE_OPTION) return;
+        int result = chooser.showOpenDialog(mainFrame);
+        System.out.println("[Load] dialog result=" + result);
+        if (result != JFileChooser.APPROVE_OPTION) return;
         File f = chooser.getSelectedFile();
+        if (f == null) return;
+        System.out.println("[Load] reading from: " + f.getAbsolutePath());
         try {
             sequencer.loadFrom(f);
             syncControlsFromSequencer();
             drumPanel.rebuild();
             pianoPanel.rebuild();
             pianoKeyLabels.repaint();
+            System.out.println("[Load] success");
         } catch (Exception ex) {
+            ex.printStackTrace();
             JOptionPane.showMessageDialog(mainFrame,
                 "Load failed: " + ex.getMessage(),
                 "Error", JOptionPane.ERROR_MESSAGE);

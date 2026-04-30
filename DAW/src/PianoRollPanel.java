@@ -4,11 +4,7 @@ import java.awt.event.MouseEvent;
 import javax.swing.*;
 
 /**
- * Custom-painted piano roll. 3 octaves,
- *  - Click an empty cell  -> create a length-1 note at the default velocity.
- *  - Drag horizontally   -> extend that note's length to the column under the cursor.
- *  - Click an existing note -> remove it.
- *  - Notes render as multi-cell rectangles whose color saturation reflects velocity.
+ * {@code PianoRollPanel} provides a graphical interface for sequencing MIDI notes.
  */
 public class PianoRollPanel extends JPanel {
     public static final int CELL_W = 32;
@@ -28,6 +24,10 @@ public class PianoRollPanel extends JPanel {
     private Note draggingNote = null;
     private int draggingStartCol = -1;
 
+    /**
+     * Constructs a {@code PianoRollPanel} for sequencing.
+     * * @param seq The {@link Sequencer} instance to be edited.
+     */
     public PianoRollPanel(Sequencer seq) {
         this.seq = seq;
         setBackground(Color.WHITE);
@@ -47,6 +47,7 @@ public class PianoRollPanel extends JPanel {
                 } else {
                     draggingNote = seq.addNoteAndReturn(pitch, col, 1, defaultVelocity);
                     draggingStartCol = col;
+                    seq.previewNote(pitch, defaultVelocity);  // hear what you just placed
                 }
                 repaint();
             }
@@ -74,7 +75,7 @@ public class PianoRollPanel extends JPanel {
         defaultVelocity = Math.max(1, Math.min(127, v));
     }
 
-    /** Call after Sequencer.numSteps changes. */
+    /** Call after Sequencer.numSteps changes (or after Load). */
     public void rebuild() {
         setPreferredSize(new Dimension(seq.numSteps * CELL_W, NUM_KEYS * CELL_H));
         revalidate();
@@ -95,32 +96,32 @@ public class PianoRollPanel extends JPanel {
         int w = n * CELL_W;
         int h = NUM_KEYS * CELL_H;
 
-        // Row backgrounds 
+        // 1) Row backgrounds (white-key vs black-key shading).
         for (int row = 0; row < NUM_KEYS; row++) {
             int midi = HIGH_MIDI - row;
             g2.setColor(isBlackKey(midi) ? new Color(225, 225, 230) : Color.WHITE);
             g2.fillRect(0, row * CELL_H, w, CELL_H);
         }
 
-        // Beat-stripe shading every 4 steps.
+        // 2) Beat-stripe shading every 4 steps.
         for (int col = 0; col < n; col += 8) {
             g2.setColor(new Color(0, 0, 0, 8));
             int stripeW = Math.min(4, n - col) * CELL_W;
             g2.fillRect(col * CELL_W, 0, stripeW, h);
         }
 
-        // Playhead column highlight.
+        // 3) Playhead column highlight.
         if (playheadCol >= 0 && playheadCol < n) {
             g2.setColor(new Color(255, 230, 100, 110));
             g2.fillRect(playheadCol * CELL_W, 0, CELL_W, h);
         }
 
-        // Vertical grid lines
+        // 4) Vertical grid lines (heavier every 4 steps).
         for (int col = 0; col <= n; col++) {
             g2.setColor((col % 4 == 0) ? Color.DARK_GRAY : new Color(220, 220, 220));
             g2.drawLine(col * CELL_W, 0, col * CELL_W, h);
         }
-        // Horizontal grid lines
+        // 5) Horizontal grid lines (heavier on every C).
         for (int row = 0; row <= NUM_KEYS; row++) {
             int midi = HIGH_MIDI - row;
             boolean isC = (((midi % 12) + 12) % 12) == 0;
@@ -128,7 +129,7 @@ public class PianoRollPanel extends JPanel {
             g2.drawLine(0, row * CELL_H, w, row * CELL_H);
         }
 
-        // Notes.
+        // 6) Notes.
         synchronized (seq.synthNotes) {
             for (Note note : seq.synthNotes) {
                 int row = HIGH_MIDI - note.pitch;
@@ -143,9 +144,9 @@ public class PianoRollPanel extends JPanel {
                 // Color: saturation/brightness encodes velocity.
                 float velNorm = note.velocity / 127f;
                 Color noteColor = new Color(
-                    (int)(40 + (1 - velNorm) * 40),     
-                    (int)(140 + velNorm * 60),          
-                    (int)(180 + velNorm * 75)          
+                    (int)(40 + (1 - velNorm) * 40),     // R
+                    (int)(140 + velNorm * 60),          // G
+                    (int)(180 + velNorm * 75)           // B
                 );
                 g2.setColor(noteColor);
                 g2.fillRect(x + 1, y + 1, wn - 2, hn - 2);

@@ -1,145 +1,202 @@
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import javax.sound.sampled.*;
 
+/**
+ * Real-time polyphonic mixer.
+ *
+ * Architecture: a single dedicated thread owns the audio output and continuously
+ * renders short buffers (BUF_SAMPLES) sample-by-sample, summing all currently-
+ * sounding {@link Voice}s into the mix. The Sequencer (or GUI) calls
+ * {@link #trigger(Voice)} or one of the {@code triggerXxx()} helpers — those
+ * calls are non-blocking and just push the new voice onto a concurrent queue.
+ *
+ * This decoupling fixes two problems the old "render-and-block-per-step"
+ * design had: (1) long notes no longer back-pressure the sequencer thread,
+ * so tempo stays stable when notes overlap; (2) the sequencer thread can
+ * sleep to its own metronome without ever waiting on audio I/O, so the
+ * visual playhead stays tight to the beat.
+ */
 public class SoundEngine {
+    private static final int SAMPLE_RATE     = 44100;
+    private static final int BUF_SAMPLES     = 512;   // ~12ms render chunk
+    private static final int LINE_BUF_BYTES  = 4096;  // ~46ms output buffer
+
     private SourceDataLine line;
-    private AudioFormat format;
-    private static final int SAMPLE_RATE = 44100;
-
-    /* Drum sample lengths */
-    private static final int KICK_SAMPLES  = 2000;
-    private static final int SNARE_SAMPLES = 1500;
-    private static final int HAT_SAMPLES   = 500;
-
-    /* Hard ceiling on per-note duration so a 64-step whole-note doesn't blow the buffer. */
-    private static final int MAX_NOTE_SAMPLES = SAMPLE_RATE; // 1s
+    private final ConcurrentLinkedQueue<Voice> pending = new ConcurrentLinkedQueue<>();
+    private final List<Voice> active = new ArrayList<>();   // owned by mixer thread
+    private volatile boolean stopRequested = false;
+    private volatile boolean running = true;
+    private final Thread mixerThread;
 
     public SoundEngine() {
         try {
-            format = new AudioFormat(SAMPLE_RATE, 16, 1, true, false);
+            AudioFormat format = new AudioFormat(SAMPLE_RATE, 16, 1, true, false);
             line = AudioSystem.getSourceDataLine(format);
-
-            line.open(format, SAMPLE_RATE) ;
+            line.open(format, LINE_BUF_BYTES);
             line.start();
         } catch (LineUnavailableException e) {
             e.printStackTrace();
         }
+        mixerThread = new Thread(this::mixerLoop, "SoundEngine-Mixer");
+        mixerThread.setDaemon(true);
+        mixerThread.start();
     }
 
-    /** Convert a MIDI pitch (60 = middle C) to a frequency in Hz. */
     public static double midiToFreq(int midi) {
         return 440.0 * Math.pow(2.0, (midi - 69) / 12.0);
     }
 
+    // ===================================================================
+    //  PUBLIC TRIGGERS — all non-blocking
+    // ===================================================================
+
+    /** Fire-and-forget: queue this voice into the live mix. */
+    public void trigger(Voice v) {
+        pending.offer(v);
+    }
+
+    public void triggerSynth(int midi, int durMs, int velocity, double gain) {
+        // Cap at 4s of synth sustain so a held whole-note at 40 BPM doesn't
+        // sit in the active list forever.
+        int durSamples = Math.min(SAMPLE_RATE * 4, (int)(SAMPLE_RATE * (durMs / 1000.0)));
+        if (durSamples < 1) durSamples = 1;
+        double amp = 8000.0 * (velocity / 127.0) * gain;
+        trigger(new SynthVoice(midiToFreq(midi), durSamples, amp));
+    }
+
+    public void triggerKick(double gain)  { trigger(new KickVoice(gain));  }
+    public void triggerSnare(double gain) { trigger(new SnareVoice(gain)); }
+    public void triggerHat(double gain)   { trigger(new HatVoice(gain));   }
+
+    /** Cut everything that's currently playing (used by Stop). */
+    public void stopAll() { stopRequested = true; }
+
+    // ===================================================================
+    //  MIXER LOOP
+    // ===================================================================
+    private void mixerLoop() {
+        double[] mix = new double[BUF_SAMPLES];
+        byte[]   out = new byte[BUF_SAMPLES * 2];
+
+        while (running) {
+            if (stopRequested) {
+                active.clear();
+                pending.clear();
+                if (line != null) line.flush();
+                stopRequested = false;
+            }
+
+            // 1) Drain any newly-triggered voices into the active list.
+            Voice incoming;
+            while ((incoming = pending.poll()) != null) active.add(incoming);
+
+            // 2) Render BUF_SAMPLES of audio (zero, then sum each voice).
+            for (int i = 0; i < BUF_SAMPLES; i++) mix[i] = 0;
+            for (int i = 0; i < active.size(); i++) active.get(i).render(mix);
+            active.removeIf(Voice::isFinished);
+
+            // 3) Convert doubles -> 16-bit PCM (with clipping) and write.
+            for (int i = 0; i < BUF_SAMPLES; i++) {
+                double s = mix[i];
+                if (s >  32767) s =  32767;
+                if (s < -32768) s = -32768;
+                short v = (short) s;
+                out[i * 2]     = (byte)( v        & 0xff);
+                out[i * 2 + 1] = (byte)((v >> 8)  & 0xff);
+            }
+            // line.write blocks when the line buffer is full; this is what
+            // throttles the mixer to real time. Exactly what we want.
+            line.write(out, 0, out.length);
+        }
+    }
+
+    // ===================================================================
+    //  VOICE CLASSES
+    // ===================================================================
+    public static abstract class Voice {
+        protected int played = 0;
+        protected final int total;
+        protected Voice(int total) { this.total = total; }
+        public boolean isFinished() { return played >= total; }
+        /** Add this voice's contribution for the next mix.length samples. */
+        public abstract void render(double[] mix);
+    }
+
+    /** Square-wave synth with linear-decay envelope (matches old playNote). */
+    public static class SynthVoice extends Voice {
+        private final double freq;
+        private final double amp;
+        public SynthVoice(double freq, int total, double amp) {
+            super(total);
+            this.freq = freq;
+            this.amp  = amp;
+        }
+        @Override public void render(double[] mix) {
+            int n = Math.min(mix.length, total - played);
+            for (int i = 0; i < n; i++) {
+                int idx = played + i;
+                double angle = idx / (SAMPLE_RATE / freq) * 2.0 * Math.PI;
+                double sample = (Math.sin(angle) > 0) ? amp : -amp;
+                double envelope = (double)(total - idx) / total;
+                mix[i] += sample * envelope;
+            }
+            played += n;
+        }
+    }
+
     /**
-     * Render and play a single audio "tick": any active drums plus any chord notes,
-     * all summed into one buffer so they play SIMULTANEOUSLY.
-     *
-     * @param drums           length-3 array: [kick, snare, hat] active flags
-     * @param chordPitches    MIDI pitches that should sound on this step
-     * @param chordVelocities velocities (0-127) parallel to chordPitches
-     * @param chordDurMs      per-note durations in ms (parallel to chordPitches)
-     * @param drumGain        0..1, multiplier on drum amplitude (drum vol * master vol)
-     * @param synthGain       0..1, multiplier on synth amplitude (synth vol * master vol)
+     * Kick: 160Hz->45Hz pitch sweep with an explicit power-curve envelope.
+     * The 45Hz floor matters: laptop speakers roll off below ~50Hz, so the
+     * old 150->0Hz sweep dropped most of its tail into inaudible territory.
      */
-    public void playStep(boolean[] drums,
-                         int[] chordPitches,
-                         int[] chordVelocities,
-                         int[] chordDurMs,
-                         double drumGain,
-                         double synthGain) {
-
-        int bufLen = 0;
-        if (drums.length > 0 && drums[0]) bufLen = Math.max(bufLen, KICK_SAMPLES);
-        if (drums.length > 1 && drums[1]) bufLen = Math.max(bufLen, SNARE_SAMPLES);
-        if (drums.length > 2 && drums[2]) bufLen = Math.max(bufLen, HAT_SAMPLES);
-        for (int dur : chordDurMs) {
-            int s = (int)(SAMPLE_RATE * (dur / 1000.0));
-            if (s > MAX_NOTE_SAMPLES) s = MAX_NOTE_SAMPLES;
-            if (s > bufLen) bufLen = s;
-        }
-        if (bufLen == 0) return;
-
-        double[] mix = new double[bufLen];
-
-        /* Drums, scaled by drum gain */
-        if (drums.length > 0 && drums[0]) addKick(mix,  drumGain);
-        if (drums.length > 1 && drums[1]) addSnare(mix, drumGain);
-        if (drums.length > 2 && drums[2]) addHat(mix,   drumGain);
-
-        // Chord notes. Each note honors its own velocity AND the synth gain.
-        // We additionally divide by sqrt(N) so a 5-note chord doesn't sit 5x louder
-        // than a single note (still leaves user-controlled gain in charge of clipping).
-        double polyScale = (chordPitches.length > 0)
-                ? 1.0 / Math.sqrt(chordPitches.length)
-                : 1.0;
-        for (int i = 0; i < chordPitches.length; i++) {
-            int durMs = chordDurMs[i];
-            int durSamples = (int)(SAMPLE_RATE * (durMs / 1000.0));
-            if (durSamples > MAX_NOTE_SAMPLES) durSamples = MAX_NOTE_SAMPLES;
-            double amp = 8000.0 * (chordVelocities[i] / 127.0) * synthGain * polyScale;
-            addSynthNote(mix, midiToFreq(chordPitches[i]), durSamples, amp);
-        }
-
-        writeBuffer(mix);
-    }
-
-    /** Convenience: mono tone with default volume (e.g. for previews). */
-    public void playChord(int[] midiPitches, int durationMs) {
-        int[] vels = new int[midiPitches.length];
-        int[] durs = new int[midiPitches.length];
-        for (int i = 0; i < midiPitches.length; i++) { vels[i] = 100; durs[i] = durationMs; }
-        playStep(new boolean[3], midiPitches, vels, durs, 1.0, 1.0);
-    }
-
-    /* Voice generation */
-    private void addSynthNote(double[] mix, double freq, int durSamples, double amp) {
-        int n = Math.min(mix.length, durSamples);
-        for (int i = 0; i < n; i++) {
-            double angle = i / (SAMPLE_RATE / freq) * 2.0 * Math.PI;
-            double sample = (Math.sin(angle) > 0) ? amp : -amp; 
-            double envelope = (double)(n - i) / n;              
-            mix[i] += sample * envelope;
+    public static class KickVoice extends Voice {
+        private final double gain;
+        public KickVoice(double gain) { super(2400); this.gain = gain; }
+        @Override public void render(double[] mix) {
+            int n = Math.min(mix.length, total - played);
+            for (int i = 0; i < n; i++) {
+                int idx = played + i;
+                double t = (double)idx / total;
+                double freq = 45.0 + 115.0 * (1.0 - t);              // 160Hz -> 45Hz
+                double angle = idx / (SAMPLE_RATE / freq) * 2.0 * Math.PI;
+                double envelope = Math.pow(1.0 - t, 0.6);            // punchy attack
+                mix[i] += 18000 * gain * Math.sin(angle) * envelope;
+            }
+            played += n;
         }
     }
 
-    private void addKick(double[] mix, double gain) {
-        int n = Math.min(mix.length, KICK_SAMPLES);
-        for (int i = 0; i < n; i++) {
-            double freq = 150.0 * (1.0 - (double)i / n);
-            double angle = i / (SAMPLE_RATE / freq) * 2.0 * Math.PI;
-            mix[i] += 12000 * gain * Math.sin(angle);
+    /** Snare: white noise with linear decay. */
+    public static class SnareVoice extends Voice {
+        private final double gain;
+        public SnareVoice(double gain) { super(1500); this.gain = gain; }
+        @Override public void render(double[] mix) {
+            int n = Math.min(mix.length, total - played);
+            for (int i = 0; i < n; i++) {
+                int idx = played + i;
+                double sample = Math.random() * 14000 - 7000;        // wider noise range
+                double envelope = (double)(total - idx) / total;
+                mix[i] += sample * envelope * gain;
+            }
+            played += n;
         }
     }
 
-    private void addSnare(double[] mix, double gain) {
-        int n = Math.min(mix.length, SNARE_SAMPLES);
-        for (int i = 0; i < n; i++) {
-            double sample = Math.random() * 10000 - 5000;
-            double envelope = (double)(n - i) / n;
-            mix[i] += sample * envelope * gain;
+    /** Hi-hat: white noise with sharp (squared) decay. */
+    public static class HatVoice extends Voice {
+        private final double gain;
+        public HatVoice(double gain) { super(500); this.gain = gain; }
+        @Override public void render(double[] mix) {
+            int n = Math.min(mix.length, total - played);
+            for (int i = 0; i < n; i++) {
+                int idx = played + i;
+                double sample = Math.random() * 10000 - 5000;        // wider noise range
+                double envelope = Math.pow((double)(total - idx) / total, 2);
+                mix[i] += sample * envelope * gain;
+            }
+            played += n;
         }
-    }
-
-    private void addHat(double[] mix, double gain) {
-        int n = Math.min(mix.length, HAT_SAMPLES);
-        for (int i = 0; i < n; i++) {
-            double sample = Math.random() * 8000 - 4000;
-            double envelope = Math.pow((double)(n - i) / n, 2);
-            mix[i] += sample * envelope * gain;
-        }
-    }
-
-    /* Buffer output */
-    private void writeBuffer(double[] mix) {
-        byte[] buf = new byte[mix.length * 2];
-        for (int i = 0; i < mix.length; i++) {
-            double v = mix[i];
-            if (v >  32767) v =  32767;
-            if (v < -32768) v = -32768;
-            short s = (short) v;
-            buf[i * 2]     = (byte)(s & 0xff);
-            buf[i * 2 + 1] = (byte)((s >> 8) & 0xff);
-        }
-        line.write(buf, 0, buf.length);
     }
 }

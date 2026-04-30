@@ -2,20 +2,29 @@ import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import javax.swing.*;
-
+/**
+ * {@code DrumPanel} is a visual grid component used for sequencing drum patterns.
+ */
 public class DrumPanel extends JPanel {
     public static final int CELL_W = 32;
     public static final int CELL_H = 30;
-
+    
     private final Sequencer seq;
     private int playheadCol = -1;
 
+    /** * Distinct colors used for rendering active steps in each drum row.
+     * Index 0 = Red|Kick, Index 1 = Blue|Snare, Index 2 = Green|Hat
+     */
     private static final Color[] ROW_COLORS = {
         new Color(220,  90,  90),  
         new Color( 90, 130, 220),  
         new Color( 90, 200, 130)   
     };
 
+    /**
+     * Constructs a new DrumPanel associated with a specific sequencer.
+     * * @param seq The {@link Sequencer} instance that holds the track data.
+     */
     public DrumPanel(Sequencer seq) {
         this.seq = seq;
         setBackground(Color.WHITE);
@@ -33,19 +42,29 @@ public class DrumPanel extends JPanel {
         addMouseListener(ma);
     }
 
-    /** Call after Sequencer.numSteps changes (or after Load). */
+    /**
+     * Updates the panel's preferred size and triggers a UI refresh.
+     */
     public void rebuild() {
         setPreferredSize(new Dimension(seq.numSteps * CELL_W, 3 * CELL_H));
         revalidate();
         repaint();
     }
 
+    /**
+     * Updates the current playhead position.
+     * * @param col The index of the step currently being processed by the sequencer.
+     */
     public void setPlayheadCol(int col) {
         if (col == playheadCol) return;
         playheadCol = col;
         repaint();
     }
 
+    /**
+     * Paints the grid, background highlights, active steps, and borders.
+     * * @param g The {@code Graphics} context used for drawing.
+     */
     @Override
     protected void paintComponent(Graphics g) {
         super.paintComponent(g);
@@ -70,7 +89,7 @@ public class DrumPanel extends JPanel {
                     g.fillRect(x + 2, y + 2, CELL_W - 4, CELL_H - 4);
                 }
 
-                // Cell border + thicker every 4 steps.
+                // Cell border + thicker every 4 steps
                 g.setColor(((col + 1) % 4 == 0) ? Color.DARK_GRAY : Color.LIGHT_GRAY);
                 g.drawRect(x, y, CELL_W, CELL_H);
             }

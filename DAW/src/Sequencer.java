@@ -8,20 +8,22 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class Sequencer implements Runnable {
+    // volatile -> the playback thread sees changes immediately
     public volatile int bpm = 120;
     private volatile boolean playing = false;
-    public volatile int numSteps = 16;           
+    public volatile int numSteps = 16;            // 16, 32, or 64
 
+    // Per-part volumes (0..100)
     public volatile int synthVol  = 80;
     public volatile int drumVol   = 80;
     public volatile int masterVol = 80;
 
     private int currentStep = 0;
 
-    // Drum grid 
+    // Drum grid (volatile so reassignment in setNumSteps is visible everywhere).
     public volatile boolean[][] trackData = new boolean[3][16];
 
-    // Piano-roll synth track 
+    // Piano-roll synth track — guarded by its own monitor.
     public final List<Note> synthNotes = new ArrayList<>();
 
     private final SoundEngine soundEngine;
@@ -33,6 +35,8 @@ public class Sequencer implements Runnable {
 
     public void setGui(DAWGui gui) { this.gui = gui; }
 
+    // --- TRANSPORT ---
+
     public void setBPM(int newBpm) {
         if (newBpm >= 40 && newBpm <= 300) this.bpm = newBpm;
     }
@@ -40,7 +44,15 @@ public class Sequencer implements Runnable {
     public void stop() {
         playing = false;
         currentStep = 0;
+        soundEngine.stopAll();           // cut any sustaining notes immediately
         if (gui != null) gui.updatePlayhead(-1);
+    }
+
+    /** Audition a single pitch right now (used by piano-roll click-to-hear). */
+    public void previewNote(int pitch, int velocity) {
+        double mv = masterVol / 100.0;
+        double sGain = (synthVol / 100.0) * mv;
+        soundEngine.triggerSynth(pitch, 200, velocity, sGain);
     }
 
     public void start() {
@@ -50,7 +62,7 @@ public class Sequencer implements Runnable {
         }
     }
 
-    // loop length
+    // --- LOOP LENGTH ---
 
     /** Resize the song. Existing drum data and notes are preserved where possible. */
     public synchronized void setNumSteps(int n) {
@@ -76,7 +88,7 @@ public class Sequencer implements Runnable {
         if (currentStep >= n) currentStep = 0;
     }
 
-    //piano roll note management
+    // --- PIANO-ROLL NOTE MANAGEMENT ---
 
     /** Adds a note (rejecting exact (pitch, startStep) duplicates) and returns it. */
     public Note addNoteAndReturn(int pitch, int startStep, int length, int velocity) {
@@ -90,12 +102,12 @@ public class Sequencer implements Runnable {
         }
     }
 
-    /** Convenience overload */
+    /** Convenience overload (default velocity 100). */
     public Note addNoteAndReturn(int pitch, int startStep, int length) {
         return addNoteAndReturn(pitch, startStep, length, 100);
     }
 
-    /** Old API kept for compatibility */
+    /** Old API kept for compatibility — same as addNoteAndReturn but discards result. */
     public void addNote(int pitch, int startStep, int length) {
         addNoteAndReturn(pitch, startStep, length, 100);
     }
@@ -214,10 +226,16 @@ public class Sequencer implements Runnable {
         boolean[][] td = trackData;
         if (step >= td[0].length) return;
 
-        boolean[] drums = new boolean[3];
-        for (int row = 0; row < 3; row++) drums[row] = td[row][step];
+        double mv    = masterVol / 100.0;
+        double dGain = (drumVol  / 100.0) * mv;
+        double sGain = (synthVol / 100.0) * mv;
 
-        // Notes that START on this step trigger this tick.
+        // Drums — fire-and-forget. Each becomes its own Voice in the mixer.
+        if (td[0][step]) soundEngine.triggerKick (dGain);
+        if (td[1][step]) soundEngine.triggerSnare(dGain);
+        if (td[2][step]) soundEngine.triggerHat  (dGain);
+
+        // Synth notes that START on this step.
         List<Note> starting;
         synchronized (synthNotes) {
             starting = new ArrayList<>();
@@ -225,22 +243,15 @@ public class Sequencer implements Runnable {
                 if (n.startStep == step) starting.add(n);
             }
         }
+        int polyN = starting.size();
+        double polyScale = (polyN > 0) ? 1.0 / Math.sqrt(polyN) : 1.0;
 
         int stepDurMs = (60000 / bpm) / 4;
-        int[] pitches = new int[starting.size()];
-        int[] vels    = new int[starting.size()];
-        int[] durs    = new int[starting.size()];
-        for (int i = 0; i < starting.size(); i++) {
-            Note n = starting.get(i);
-            pitches[i] = n.pitch;
-            vels[i]    = n.velocity;
-            durs[i]    = n.length * stepDurMs;
+        for (Note n : starting) {
+            soundEngine.triggerSynth(n.pitch,
+                                     n.length * stepDurMs,
+                                     n.velocity,
+                                     sGain * polyScale);
         }
-
-        double mv = masterVol / 100.0;
-        double dGain = (drumVol  / 100.0) * mv;
-        double sGain = (synthVol / 100.0) * mv;
-
-        soundEngine.playStep(drums, pitches, vels, durs, dGain, sGain);
     }
 }
