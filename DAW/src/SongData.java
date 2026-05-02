@@ -10,10 +10,10 @@ public class SongData implements Serializable {
 
     public int bpm;
     public int numSteps;
-    public boolean[][] trackData;   
-    public List<Note> synthNotes;  
+    public boolean[][] trackData;
+    public List<Note> synthNotes;
 
-    public int synthVol;          
-    public int drumVol;           
-    public int masterVol;         
+    public int synthVol;
+    public int drumVol;
+    public int masterVol;
 }
