@@ -24,6 +24,7 @@ public class SoundEngine {
     private static final int LINE_BUF_BYTES  = 4096;  // ~46ms output buffer
 
     private SourceDataLine line;
+    private final Synth synth = new Synth();
     private final ConcurrentLinkedQueue<Voice> pending = new ConcurrentLinkedQueue<>();
     private final List<Voice> active = new ArrayList<>();   // owned by mixer thread
     private volatile boolean stopRequested = false;
@@ -63,7 +64,7 @@ public class SoundEngine {
         int durSamples = Math.min(SAMPLE_RATE * 4, (int)(SAMPLE_RATE * (durMs / 1000.0)));
         if (durSamples < 1) durSamples = 1;
         double amp = 8000.0 * (velocity / 127.0) * gain;
-        trigger(new SynthVoice(midiToFreq(midi), durSamples, amp));
+        trigger(synth.note(midiToFreq(midi), durSamples, amp));
     }
 
     public void triggerKick(double gain)  { trigger(new KickVoice(gain));  }
@@ -122,28 +123,6 @@ public class SoundEngine {
         public boolean isFinished() { return played >= total; }
         /** Add this voice's contribution for the next mix.length samples. */
         public abstract void render(double[] mix);
-    }
-
-    /** Square-wave synth with linear-decay envelope (matches old playNote). */
-    public static class SynthVoice extends Voice {
-        private final double freq;
-        private final double amp;
-        public SynthVoice(double freq, int total, double amp) {
-            super(total);
-            this.freq = freq;
-            this.amp  = amp;
-        }
-        @Override public void render(double[] mix) {
-            int n = Math.min(mix.length, total - played);
-            for (int i = 0; i < n; i++) {
-                int idx = played + i;
-                double angle = idx / (SAMPLE_RATE / freq) * 2.0 * Math.PI;
-                double sample = (Math.sin(angle) > 0) ? amp : -amp;
-                double envelope = (double)(total - idx) / total;
-                mix[i] += sample * envelope;
-            }
-            played += n;
-        }
     }
 
     /**
