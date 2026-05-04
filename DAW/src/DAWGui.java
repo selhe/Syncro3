@@ -51,6 +51,7 @@ public class DAWGui {
         JTabbedPane tabs = new JTabbedPane();
         tabs.addTab("Drums",      buildDrumTab());
         tabs.addTab("Piano Roll", buildPianoTab());
+        tabs.addTab("Synth",new SynthPanel(sequencer.getSoundEngine()));
         mainFrame.add(tabs, BorderLayout.CENTER);
 
         mainFrame.pack();

@@ -17,16 +17,13 @@ public class PianoRollPanel extends JPanel {
     private final Sequencer seq;
     private int playheadCol = -1;
 
-    // Default velocity for newly-created notes (set by toolbar slider).
     private int defaultVelocity = 100;
-
-    // Active drag state
     private Note draggingNote = null;
     private int draggingStartCol = -1;
 
-    /**
+    /** 
      * Constructs a {@code PianoRollPanel} for sequencing.
-     * * @param seq The {@link Sequencer} instance to be edited.
+     * @param seq The {@link Sequencer} instance to be edited.
      */
     public PianoRollPanel(Sequencer seq) {
         this.seq = seq;
@@ -47,7 +44,7 @@ public class PianoRollPanel extends JPanel {
                 } else {
                     draggingNote = seq.addNoteAndReturn(pitch, col, 1, defaultVelocity);
                     draggingStartCol = col;
-                    seq.previewNote(pitch, defaultVelocity);  // hear what you just placed
+                    seq.previewNote(pitch, defaultVelocity);  
                 }
                 repaint();
             }
@@ -70,24 +67,36 @@ public class PianoRollPanel extends JPanel {
         addMouseListener(ma);
         addMouseMotionListener(ma);
     }
-
+    /**
+     * Sets the velocity for new notes.
+     * @param v The velocity value, clamped between 1 and 127.
+     */
     public void setDefaultVelocity(int v) {
         defaultVelocity = Math.max(1, Math.min(127, v));
     }
 
-    /** Call after Sequencer.numSteps changes (or after Load). */
+    /** * Recalculates the panel dimensions based on the sequencer's step count.
+     * Should be called after loading a file or changing sequence length.
+     */
     public void rebuild() {
         setPreferredSize(new Dimension(seq.numSteps * CELL_W, NUM_KEYS * CELL_H));
         revalidate();
         repaint();
     }
 
+    /**
+     * Updates the visual position of the playhead.
+     * @param col The current step index.
+     */
     public void setPlayheadCol(int col) {
         if (col == playheadCol) return;
         playheadCol = col;
         repaint();
     }
 
+    /**
+     * Renders the piano roll components
+     */
     @Override
     protected void paintComponent(Graphics g) {
         super.paintComponent(g);
@@ -96,32 +105,32 @@ public class PianoRollPanel extends JPanel {
         int w = n * CELL_W;
         int h = NUM_KEYS * CELL_H;
 
-        // 1) Row backgrounds (white-key vs black-key shading).
+        //Row backgrounds
         for (int row = 0; row < NUM_KEYS; row++) {
             int midi = HIGH_MIDI - row;
             g2.setColor(isBlackKey(midi) ? new Color(225, 225, 230) : Color.WHITE);
             g2.fillRect(0, row * CELL_H, w, CELL_H);
         }
 
-        // 2) Beat-stripe shading every 4 steps.
+        //Beat-stripe shading every 4 steps
         for (int col = 0; col < n; col += 8) {
             g2.setColor(new Color(0, 0, 0, 8));
             int stripeW = Math.min(4, n - col) * CELL_W;
             g2.fillRect(col * CELL_W, 0, stripeW, h);
         }
 
-        // 3) Playhead column highlight.
+        //Playhead column highlight.
         if (playheadCol >= 0 && playheadCol < n) {
             g2.setColor(new Color(255, 230, 100, 110));
             g2.fillRect(playheadCol * CELL_W, 0, CELL_W, h);
         }
 
-        // 4) Vertical grid lines (heavier every 4 steps).
+        //Vertical grid lines.
         for (int col = 0; col <= n; col++) {
             g2.setColor((col % 4 == 0) ? Color.DARK_GRAY : new Color(220, 220, 220));
             g2.drawLine(col * CELL_W, 0, col * CELL_W, h);
         }
-        // 5) Horizontal grid lines (heavier on every C).
+        //Horizontal grid lines (heavier on every C).
         for (int row = 0; row <= NUM_KEYS; row++) {
             int midi = HIGH_MIDI - row;
             boolean isC = (((midi % 12) + 12) % 12) == 0;
@@ -129,7 +138,7 @@ public class PianoRollPanel extends JPanel {
             g2.drawLine(0, row * CELL_H, w, row * CELL_H);
         }
 
-        // 6) Notes.
+        //Notes.
         synchronized (seq.synthNotes) {
             for (Note note : seq.synthNotes) {
                 int row = HIGH_MIDI - note.pitch;
@@ -141,17 +150,16 @@ public class PianoRollPanel extends JPanel {
                 int wn = Math.min(note.length, n - note.startStep) * CELL_W;
                 int hn = CELL_H;
 
-                // Color: saturation/brightness encodes velocity.
                 float velNorm = note.velocity / 127f;
                 Color noteColor = new Color(
-                    (int)(40 + (1 - velNorm) * 40),     // R
-                    (int)(140 + velNorm * 60),          // G
-                    (int)(180 + velNorm * 75)           // B
+                    (int)(40 + (1 - velNorm) * 40),    
+                    (int)(140 + velNorm * 60),         
+                    (int)(180 + velNorm * 75)          
                 );
                 g2.setColor(noteColor);
                 g2.fillRect(x + 1, y + 1, wn - 2, hn - 2);
 
-                // Outline + small bar at the start to mark the attack.
+                // Outline + small bar at the start to mark the attack
                 g2.setColor(new Color(20, 60, 90));
                 g2.drawRect(x, y, wn, hn);
                 g2.fillRect(x, y, 3, hn);

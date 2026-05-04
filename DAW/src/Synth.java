@@ -130,4 +130,13 @@ public final class Synth {
 			}
 		}
 	}
+	public Waveform getWaveform()        { return waveform; }
+	public int      getUnisonVoices()    { return unisonVoices; }
+	public double   getDetuneCents()     { return detuneSpreadCents; }
+	public int      getAttackMs()        { return samplesToMs(attackSamples); }
+	public int      getDecayMs()         { return samplesToMs(decaySamples); }
+	public int      getReleaseMs()       { return samplesToMs(releaseSamples); }
+	public double   getSustainLevel()    { return sustainLevel; }
+
+	private int samplesToMs(int s) { return (int)(s * 1000.0 / sampleRate); }
 }

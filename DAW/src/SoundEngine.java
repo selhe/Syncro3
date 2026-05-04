@@ -20,13 +20,15 @@ import javax.sound.sampled.*;
  */
 public class SoundEngine {
     private static final int SAMPLE_RATE     = 44100;
-    private static final int BUF_SAMPLES     = 512;   // ~12ms render chunk
-    private static final int LINE_BUF_BYTES  = 4096;  // ~46ms output buffer
+    private static final int BUF_SAMPLES     = 512;   
+    private static final int LINE_BUF_BYTES  = 4096; 
 
     private SourceDataLine line;
-    private final Synth synth = new Synth();
+    private volatile Synth synth = new Synth();
+    public void  setSynth(Synth s) { if (s != null) this.synth = s; }
+    public Synth getSynth(){ return synth; }
     private final ConcurrentLinkedQueue<Voice> pending = new ConcurrentLinkedQueue<>();
-    private final List<Voice> active = new ArrayList<>();   // owned by mixer thread
+    private final List<Voice> active = new ArrayList<>();   
     private volatile boolean stopRequested = false;
     private volatile boolean running = true;
     private final Thread mixerThread;
@@ -49,10 +51,6 @@ public class SoundEngine {
         return 440.0 * Math.pow(2.0, (midi - 69) / 12.0);
     }
 
-    // ===================================================================
-    //  PUBLIC TRIGGERS — all non-blocking
-    // ===================================================================
-
     /** Fire-and-forget: queue this voice into the live mix. */
     public void trigger(Voice v) {
         pending.offer(v);
@@ -71,12 +69,8 @@ public class SoundEngine {
     public void triggerSnare(double gain) { trigger(new SnareVoice(gain)); }
     public void triggerHat(double gain)   { trigger(new HatVoice(gain));   }
 
-    /** Cut everything that's currently playing (used by Stop). */
     public void stopAll() { stopRequested = true; }
 
-    // ===================================================================
-    //  MIXER LOOP
-    // ===================================================================
     private void mixerLoop() {
         double[] mix = new double[BUF_SAMPLES];
         byte[]   out = new byte[BUF_SAMPLES * 2];
@@ -113,9 +107,6 @@ public class SoundEngine {
         }
     }
 
-    // ===================================================================
-    //  VOICE CLASSES
-    // ===================================================================
     public static abstract class Voice {
         protected int played = 0;
         protected final int total;
