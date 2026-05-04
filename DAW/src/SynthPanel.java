@@ -34,7 +34,6 @@ public class SynthPanel extends JPanel {
         add(new JLabel("Sustain (%)"));  add(sustainSlider);
         add(new JLabel("Release (ms)")); add(releaseSlider);
 
-        // Any change → rebuild Synth and hot-swap it in.
         Runnable apply = this::rebuildSynth;
         waveBox.addActionListener(e -> apply.run());
         for (JSlider sl : new JSlider[]{unisonSlider, detuneSlider,

@@ -32,6 +32,11 @@ public class SoundEngine {
     private volatile boolean stopRequested = false;
     private volatile boolean running = true;
     private final Thread mixerThread;
+    private final Drums drums = new Drums();
+
+    private static final double KICK_DUR_SEC  = 2400.0 / SAMPLE_RATE;  // ~54 ms
+    private static final double SNARE_DUR_SEC = 1500.0 / SAMPLE_RATE;  // ~34 ms
+    private static final double HAT_DUR_SEC   = 500.0  / SAMPLE_RATE;  // ~11 ms
 
     public SoundEngine() {
         try {
@@ -51,24 +56,22 @@ public class SoundEngine {
         return 440.0 * Math.pow(2.0, (midi - 69) / 12.0);
     }
 
-    /** Fire-and-forget: queue this voice into the live mix. */
     public void trigger(Voice v) {
         pending.offer(v);
     }
 
     public void triggerSynth(int midi, int durMs, int velocity, double gain) {
-        // Cap at 4s of synth sustain so a held whole-note at 40 BPM doesn't
-        // sit in the active list forever.
+
         int durSamples = Math.min(SAMPLE_RATE * 4, (int)(SAMPLE_RATE * (durMs / 1000.0)));
         if (durSamples < 1) durSamples = 1;
         double amp = 8000.0 * (velocity / 127.0) * gain;
         trigger(synth.note(midiToFreq(midi), durSamples, amp));
     }
 
-    public void triggerKick(double gain)  { trigger(new KickVoice(gain));  }
-    public void triggerSnare(double gain) { trigger(new SnareVoice(gain)); }
-    public void triggerHat(double gain)   { trigger(new HatVoice(gain));   }
-
+    public void triggerKick (double gain) { trigger(drums.newKick (gain)); }
+    public void triggerSnare(double gain) { trigger(drums.newSnare(gain)); }
+    public void triggerHat  (double gain) { trigger(drums.newHat  (gain)); }
+    
     public void stopAll() { stopRequested = true; }
 
     private void mixerLoop() {
@@ -83,16 +86,13 @@ public class SoundEngine {
                 stopRequested = false;
             }
 
-            // 1) Drain any newly-triggered voices into the active list.
             Voice incoming;
             while ((incoming = pending.poll()) != null) active.add(incoming);
 
-            // 2) Render BUF_SAMPLES of audio (zero, then sum each voice).
             for (int i = 0; i < BUF_SAMPLES; i++) mix[i] = 0;
             for (int i = 0; i < active.size(); i++) active.get(i).render(mix);
             active.removeIf(Voice::isFinished);
 
-            // 3) Convert doubles -> 16-bit PCM (with clipping) and write.
             for (int i = 0; i < BUF_SAMPLES; i++) {
                 double s = mix[i];
                 if (s >  32767) s =  32767;
@@ -101,8 +101,7 @@ public class SoundEngine {
                 out[i * 2]     = (byte)( v        & 0xff);
                 out[i * 2 + 1] = (byte)((v >> 8)  & 0xff);
             }
-            // line.write blocks when the line buffer is full; this is what
-            // throttles the mixer to real time. Exactly what we want.
+
             line.write(out, 0, out.length);
         }
     }
@@ -112,59 +111,20 @@ public class SoundEngine {
         protected final int total;
         protected Voice(int total) { this.total = total; }
         public boolean isFinished() { return played >= total; }
-        /** Add this voice's contribution for the next mix.length samples. */
         public abstract void render(double[] mix);
     }
 
-    /**
-     * Kick: 160Hz->45Hz pitch sweep with an explicit power-curve envelope.
-     * The 45Hz floor matters: laptop speakers roll off below ~50Hz, so the
-     * old 150->0Hz sweep dropped most of its tail into inaudible territory.
-     */
-    public static class KickVoice extends Voice {
-        private final double gain;
-        public KickVoice(double gain) { super(2400); this.gain = gain; }
-        @Override public void render(double[] mix) {
-            int n = Math.min(mix.length, total - played);
-            for (int i = 0; i < n; i++) {
-                int idx = played + i;
-                double t = (double)idx / total;
-                double freq = 45.0 + 115.0 * (1.0 - t);              // 160Hz -> 45Hz
-                double angle = idx / (SAMPLE_RATE / freq) * 2.0 * Math.PI;
-                double envelope = Math.pow(1.0 - t, 0.6);            // punchy attack
-                mix[i] += 18000 * gain * Math.sin(angle) * envelope;
-            }
-            played += n;
+    /** Plays back a pre-rendered sample buffer (e.g. from Drums.java). */
+    public static class SampleVoice extends Voice {
+        private final double[] buffer;
+        public SampleVoice(double[] buffer) {
+            super(buffer.length);
+            this.buffer = buffer;
         }
-    }
-
-    /** Snare: white noise with linear decay. */
-    public static class SnareVoice extends Voice {
-        private final double gain;
-        public SnareVoice(double gain) { super(1500); this.gain = gain; }
         @Override public void render(double[] mix) {
             int n = Math.min(mix.length, total - played);
             for (int i = 0; i < n; i++) {
-                int idx = played + i;
-                double sample = Math.random() * 14000 - 7000;        // wider noise range
-                double envelope = (double)(total - idx) / total;
-                mix[i] += sample * envelope * gain;
-            }
-            played += n;
-        }
-    }
-
-    /** Hi-hat: white noise with sharp (squared) decay. */
-    public static class HatVoice extends Voice {
-        private final double gain;
-        public HatVoice(double gain) { super(500); this.gain = gain; }
-        @Override public void render(double[] mix) {
-            int n = Math.min(mix.length, total - played);
-            for (int i = 0; i < n; i++) {
-                int idx = played + i;
-                double sample = Math.random() * 10000 - 5000;        // wider noise range
-                double envelope = Math.pow((double)(total - idx) / total, 2);
-                mix[i] += sample * envelope * gain;
+                mix[i] += buffer[played + i];
             }
             played += n;
         }
